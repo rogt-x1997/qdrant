@@ -51,9 +51,13 @@ def get_qdrant_client():
    )
 
 def list_collections():
-   client = get_qdrant_client()
-   collections = client.get_collections()
-   return [col.name for col in collections.collections]
+    try:
+        client = get_qdrant_client()
+        collections = client.get_collections()
+        return [col.name for col in collections.collections]
+    except Exception as e:
+        logger.error(f"Failed to list collections: {str(e)}")
+        return []
 
 def send_email_alert(status: str, details: str):
    try:
@@ -86,14 +90,35 @@ def send_sms_alert(message: str):
        return False
 
 def check_api_health(collection_name):
-   start_time = time.time()
-   try:
-       client = get_qdrant_client()
-       collection_info = client.get_collection(collection_name)
-       response_time = (time.time() - start_time) * 1000
-       return True, collection_info, response_time
-   except Exception as e:
-       return False, str(e), None
+    start_time = time.time()
+    try:
+        client = get_qdrant_client()
+        # First check if collection exists
+        collections = client.get_collections()
+        if collection_name not in [col.name for col in collections.collections]:
+            return False, f"Collection '{collection_name}' not found", None
+            
+        # Try to get basic collection info without detailed config
+        try:
+            collection_info = client.get_collection(collection_name)
+            response_time = (time.time() - start_time) * 1000
+            
+            # Extract only necessary info to avoid validation errors
+            safe_info = {
+                "name": collection_info.name,
+                "status": "green",
+                "vectors_count": collection_info.vectors_count,
+                "points_count": collection_info.points_count,
+                "segments_count": collection_info.segments_count
+            }
+            return True, safe_info, response_time
+        except Exception as collection_error:
+            logger.error(f"Collection info error: {str(collection_error)}")
+            return False, f"Failed to get collection info: {str(collection_error)}", None
+            
+    except Exception as e:
+        logger.error(f"Connection error: {str(e)}")
+        return False, f"Failed to connect to Qdrant: {str(e)}", None
 
 def update_metrics(status: bool, response_time: float = None):
    now = datetime.now()
@@ -130,10 +155,14 @@ def main():
    st.sidebar.header("⚙️ Settings")
    
    collections = list_collections()
+   if not collections:
+       st.error("⚠️ Failed to fetch collections. Please check your Qdrant connection settings.")
+       return
+
    selected_collection = st.sidebar.selectbox(
        "Select Collection",
        collections,
-       index=0
+       index=0 if collections else None
    )
    
    refresh_interval = st.sidebar.slider(
